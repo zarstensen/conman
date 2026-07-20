@@ -3,8 +3,13 @@ pub mod tui;
 
 use clap::ValueEnum;
 use std::{
-    borrow::Cow, collections::{BTreeSet, HashMap, HashSet}, default, fs, io, path::{Path, PathBuf}, sync::LazyLock,
+    borrow::Cow,
+    collections::{BTreeSet, HashMap, HashSet},
+    default, fs, io,
+    path::{Path, PathBuf},
+    sync::LazyLock,
 };
+use thiserror::Error;
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +17,12 @@ pub const PENDING_PACKAGES_PATH: LazyLock<PathBuf> =
     LazyLock::new(|| PathBuf::from(r#"/var/lib/conman/pending_packages.json"#));
 pub const CONTAINERS_PATH: LazyLock<PathBuf> =
     LazyLock::new(|| PathBuf::from(r#"/etc/conman/containers/"#));
+
+#[derive(Error, Debug)]
+pub enum ConmanError {
+    #[error("package '{0}' does not exist")]
+    PackageNotFound(String),
+}
 
 #[derive(Serialize, Deserialize, ValueEnum, Clone)]
 pub enum PackageAction {
@@ -45,18 +56,24 @@ impl PendingPackages {
     // basically need a way of saying, ok we *intend* on doing something with this subset of packages.
     // please extract it from the current pending packages, and if something fails, then we also
     // have a way of mergin the pending packages back in.
-    pub fn extract(&mut self, packages: impl IntoIterator<Item = impl AsRef<str>> + Clone) -> Option<PendingPackages> {
+    pub fn extract(
+        &mut self,
+        packages: impl IntoIterator<Item = impl AsRef<str>> + Clone,
+    ) -> Result<PendingPackages, ConmanError> {
         let mut res: PendingPackages = Default::default();
 
         for package in packages.clone() {
-            res.0.insert(package.as_ref().to_owned(), self.0.get(package.as_ref())?.clone());
+            res.0.insert(
+                package.as_ref().to_owned(),
+                self.0.get(package.as_ref()).ok_or(ConmanError(package.as_ref().to_owned()))?.clone(),
+            );
         }
 
         for package in packages {
             self.0.remove(package.as_ref());
         }
 
-        Some(res)
+        Ok(res)
     }
 }
 
@@ -154,7 +171,10 @@ impl Containers {
         pending_packages: PendingPackages,
     ) {
         for container in containers {
-            let con_entry = self.containers.entry(container.as_ref().to_owned()).or_default();
+            let con_entry = self
+                .containers
+                .entry(container.as_ref().to_owned())
+                .or_default();
 
             for (package_name, action) in &pending_packages.0 {
                 con_entry.update(package_name.clone(), action);
