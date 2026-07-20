@@ -1,0 +1,1 @@
+COMPLETE=fish conman | source
