@@ -1,17 +1,26 @@
-use std::io;
-
+use anyhow::Error;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::CompleteEnv;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use conman::{Containers, PendingPackages};
 
+use crate::commands::discover::handle_discover;
+use crate::commands::drop::handle_drop;
+use crate::commands::list::handle_list;
+use crate::commands::push::handle_push;
+
+mod commands;
+
 fn containers_candidates() -> Vec<CompletionCandidate> {
-    Vec::new()
+    match Containers::load(&conman::CONTAINERS_PATH) {
+        Ok(containers) => containers.containers.keys().map(CompletionCandidate::new).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 fn packages_candidates() -> Vec<CompletionCandidate> {
     match PendingPackages::load(&conman::PENDING_PACKAGES_PATH) {
-        Ok(packages) => packages.0.keys().map(CompletionCandidate::new).collect(),
+        Ok(pending_pkgs) => pending_pkgs.packages.keys().map(CompletionCandidate::new).collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -19,19 +28,21 @@ fn packages_candidates() -> Vec<CompletionCandidate> {
 #[derive(Subcommand)]
 pub enum CliAction {
     Push {
-        #[arg(add = ArgValueCandidates::new(containers_candidates))]
+        #[arg(short, num_args = 1, add = ArgValueCandidates::new(containers_candidates))]
         containers: Vec<String>,
-        #[arg(short, long, add = ArgValueCandidates::new(packages_candidates))]
+        #[arg(add = ArgValueCandidates::new(packages_candidates))]
         packages: Vec<String>,
-        #[arg(short = 'e', long, add = ArgValueCandidates::new(packages_candidates))]
-        packages_exclude: Vec<String>,
     },
     Drop {
         #[arg(add = ArgValueCandidates::new(packages_candidates))]
         packages: Vec<String>,
     },
     List,
-    Install,
+    Discover {
+        packages: Vec<String>,
+        ignore_containers: bool,
+    },
+
 }
 
 #[derive(Parser)]
@@ -40,17 +51,8 @@ struct Args {
     action: CliAction,
 }
 
-fn verify_packages(packages: &Vec<String>) -> bool {
-    false
-}
 
-fn verify_containers(packages: &Vec<String>) -> bool {
-    false
-}
-
-fn handle_push(containers: &Vec<String>) {}
-
-fn main() -> Result<(), io::Error>{
+fn main() -> Result<(), Error> {
     CompleteEnv::with_factory(Args::command).complete();
 
     let args = Args::parse();
@@ -58,19 +60,11 @@ fn main() -> Result<(), io::Error>{
     match args.action {
         CliAction::Push {
             containers,
-            packages,
-            packages_exclude,
-        } => {
-
-            let mut cs = Containers::load(&conman::CONTAINERS_PATH)
-                .expect("Containers directory appears to be corrupt.");
-
-            // final thing is that somehow stuff is removed from pending packages?
-            cs.apply(&containers, PendingPackages::load(&conman::PENDING_PACKAGES_PATH)?);
-
-            cs.store(&conman::CONTAINERS_PATH)?;
-        }
-        _ => (),
+            packages
+        } => handle_push(containers, packages),
+        CliAction::List => handle_list(),
+        CliAction::Drop { packages } => handle_drop(packages),
+        CliAction::Discover { packages, ignore_containers } => handle_discover(packages, ignore_containers),
+        _ => Ok(()),
     }
-    Ok(())
 }

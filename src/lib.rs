@@ -1,13 +1,10 @@
-// so... this is just pr. .config i guess?
 pub mod tui;
 
+use alpm::Alpm;
 use clap::ValueEnum;
+use glob_match::glob_match;
 use std::{
-    borrow::Cow,
-    collections::{BTreeSet, HashMap, HashSet},
-    default, fs, io,
-    path::{Path, PathBuf},
-    sync::LazyLock,
+    collections::{BTreeMap, BTreeSet, HashMap}, fs, io, path::{Path, PathBuf}, sync::LazyLock,
 };
 use thiserror::Error;
 
@@ -24,6 +21,28 @@ pub enum ConmanError {
     PackageNotFound(String),
 }
 
+pub fn pacman_alpm() -> alpm::Result<Alpm> {
+    Alpm::new("/", "/var/lib/pacman")
+}
+
+pub fn discover_packages(pkg_globs: Vec<String>) -> alpm::Result<Vec<String>> {
+    let alpm = pacman_alpm()?;
+    let db = alpm.localdb();
+
+    Ok(db
+        .pkgs()
+        .iter()
+        .filter(|pkg| pkg.reason() == alpm::PackageReason::Explicit)
+        .map(|pkg| pkg.name().to_owned())
+        .filter(|pkg| {
+            pkg_globs
+                .clone()
+                .into_iter()
+                .any(|glob| glob_match(glob.as_ref(), &pkg))
+        })
+        .collect())
+}
+
 #[derive(Serialize, Deserialize, ValueEnum, Clone)]
 pub enum PackageAction {
     Add = 0,
@@ -34,7 +53,26 @@ pub enum PackageAction {
 /// but has not been added to any containers.
 /// This is stored in a file on the PC, this struct also manages storing / loading this file.
 #[derive(Serialize, Deserialize, Default)]
-pub struct PendingPackages(pub HashMap<String, PackageAction>);
+pub struct PendingPackages {
+    pub packages: BTreeMap<String, PackageAction>,
+}
+
+impl std::fmt::Display for PendingPackages {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (package_name, action) in &self.packages {
+            write!(
+                f,
+                "{} {}\n",
+                match action {
+                    PackageAction::Add => "+",
+                    PackageAction::Remove => "-",
+                },
+                package_name
+            )?;
+        }
+        Ok(())
+    }
+}
 
 impl PendingPackages {
     pub fn load(path: &Path) -> Result<Self, serde_json::Error> {
@@ -42,7 +80,7 @@ impl PendingPackages {
             let data = fs::read_to_string(path).unwrap_or_default();
             serde_json::from_str(&data)
         } else {
-            Ok(PendingPackages(HashMap::new()))
+            Ok(Default::default())
         }
     }
 
@@ -56,24 +94,26 @@ impl PendingPackages {
     // basically need a way of saying, ok we *intend* on doing something with this subset of packages.
     // please extract it from the current pending packages, and if something fails, then we also
     // have a way of mergin the pending packages back in.
-    pub fn extract(
-        &mut self,
-        packages: impl IntoIterator<Item = impl AsRef<str>> + Clone,
-    ) -> Result<PendingPackages, ConmanError> {
-        let mut res: PendingPackages = Default::default();
+    pub fn glob_extract(
+        &self,
+        pkg_globs: impl IntoIterator<Item = impl AsRef<str>> + Clone,
+    ) -> Result<(PendingPackages, PendingPackages), ConmanError> {
+        let mut matched: PendingPackages = Default::default();
+        let mut unmatched: PendingPackages = Default::default();
 
-        for package in packages.clone() {
-            res.0.insert(
-                package.as_ref().to_owned(),
-                self.0.get(package.as_ref()).ok_or(ConmanError(package.as_ref().to_owned()))?.clone(),
-            );
-        }
+        self.packages.iter().for_each(|(pkg, action)| {
+            if pkg_globs
+                .clone()
+                .into_iter()
+                .any(|glob| glob_match(glob.as_ref(), &pkg))
+            {
+                matched.packages.insert(pkg.to_owned(), action.to_owned());
+            } else {
+                unmatched.packages.insert(pkg.to_owned(), action.to_owned());
+            }
+        });
 
-        for package in packages {
-            self.0.remove(package.as_ref());
-        }
-
-        Ok(res)
+        Ok((matched, unmatched))
     }
 }
 
@@ -88,7 +128,6 @@ pub struct Container {
 
 impl Container {
     pub fn serialize(&self) -> String {
-        println!("Serializing: {:?}", self.packages);
         self.packages.iter().cloned().collect::<Vec<_>>().join("\n")
     }
 
@@ -105,7 +144,6 @@ impl Container {
     pub fn update(&mut self, package: String, action: &PackageAction) -> () {
         match action {
             PackageAction::Add => {
-                println!("{}", package);
                 self.packages.insert(package);
             }
             PackageAction::Remove => {
@@ -138,8 +176,6 @@ impl Containers {
             }
         }
 
-        println!("Containers after load: {:?}", res.containers);
-
         Ok(res)
     }
 
@@ -159,6 +195,10 @@ impl Containers {
         }
 
         for (con_name, container) in &self.containers {
+            if container.packages.is_empty() {
+                continue;
+            }
+
             fs::write(path.join(con_name), container.serialize())?;
         }
 
@@ -168,7 +208,7 @@ impl Containers {
     pub fn apply<TConIter: IntoIterator<Item = impl AsRef<str>>>(
         &mut self,
         containers: TConIter,
-        pending_packages: PendingPackages,
+        pending_packages: &PendingPackages,
     ) {
         for container in containers {
             let con_entry = self
@@ -176,9 +216,18 @@ impl Containers {
                 .entry(container.as_ref().to_owned())
                 .or_default();
 
-            for (package_name, action) in &pending_packages.0 {
+            for (package_name, action) in &pending_packages.packages {
                 con_entry.update(package_name.clone(), action);
             }
         }
+    }
+
+    pub fn contains(&self, package: &str) -> bool {
+        for (_, container) in &self.containers {
+            if container.packages.contains(package) {
+                return true;
+            }
+        }
+        false
     }
 }

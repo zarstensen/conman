@@ -6,8 +6,10 @@ default-run = "conman"
 
 [dependencies]
 alpm = "5.0.2"
+anyhow = "1.0.104"
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = { version = "4.6.7", features = ["unstable-dynamic"] }
+glob-match = "0.2.1"
 homedir = "0.3.6"
 rand = "0.10.2"
 ratatui = "0.30.2"
