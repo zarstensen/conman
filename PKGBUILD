@@ -2,9 +2,9 @@ pkgname=conman-git
 pkgver=0.0.0
 pkgrel=1
 pkgdesc=""
-arch="x86_64"
+arch=(x86_64)
 url="https://github.com/zarstensen/conman"
-license="MIT"
+license=(MIT)
 makedepends=(git cargo)
 source=("$pkgname::git+$url")
 
