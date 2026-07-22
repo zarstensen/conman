@@ -1,5 +1,5 @@
 pkgname=conman-git
-pkgver=0.0.0.r1.gbeef025
+pkgver=0.0.0.r0.g559f88d
 pkgrel=1
 pkgdesc=""
 arch=(x86_64)
